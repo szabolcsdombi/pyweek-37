@@ -24,8 +24,12 @@ image = ctx.image((880, 880), 'rgba8unorm')
 depth = ctx.image((880, 880), 'depth24plus')
 pick = ctx.image((880, 880), 'r32sint')
 
-vertex_buffer = ctx.buffer(open('tube.bin', 'rb').read())
+tube_vertex_buffer = ctx.buffer(open('tube.bin', 'rb').read())
 uniform_buffer = ctx.buffer(size=80, uniform=True)
+
+cube_vertex_buffer = ctx.buffer(open('cube.bin', 'rb').read())
+cube_instance_buffer = ctx.buffer(size=16384)
+particle_instance_buffer = ctx.buffer(size=16384)
 
 pipeline = ctx.pipeline(
     vertex_shader='''
@@ -125,16 +129,13 @@ pipeline = ctx.pipeline(
         'offset': 0.0,
     },
     framebuffer=[image, depth],
-    vertex_buffers=zengl.bind(vertex_buffer, '3f 3f', 0, 1),
-    vertex_count=vertex_buffer.size // zengl.calcsize('3f 3f'),
+    vertex_buffers=zengl.bind(tube_vertex_buffer, '3f 3f', 0, 1),
+    vertex_count=tube_vertex_buffer.size // zengl.calcsize('3f 3f'),
     topology='triangles',
     instance_count=2,
 )
 
-vertex_buffer_2 = ctx.buffer(open('cube.bin', 'rb').read())
-instance_buffer = ctx.buffer(size=16384)
-
-shapes = ctx.pipeline(
+cube_pipeline = ctx.pipeline(
     vertex_shader='''
         #version 300 es
         precision highp float;
@@ -245,12 +246,127 @@ shapes = ctx.pipeline(
     ],
     framebuffer=[image, pick, depth],
     vertex_buffers=[
-        *zengl.bind(vertex_buffer_2, '3f 3f', 0, 1),
-        *zengl.bind(instance_buffer, '3f 4f 3f /i', 2, 3, 4),
+        *zengl.bind(cube_vertex_buffer, '3f 3f', 0, 1),
+        *zengl.bind(cube_instance_buffer, '3f 4f 3f /i', 2, 3, 4),
     ],
-    vertex_count=vertex_buffer_2.size // zengl.calcsize('3f 3f'),
+    vertex_count=cube_vertex_buffer.size // zengl.calcsize('3f 3f'),
     topology='triangles',
-    instance_count=2,
+)
+
+particle_pipeline = ctx.pipeline(
+    vertex_shader='''
+        #version 300 es
+        precision highp float;
+        precision highp int;
+
+        layout (std140) uniform Common {
+            mat4 camera_matrix;
+            float offset;
+            float rotate;
+        };
+
+        layout (location = 0) in vec3 in_vertex;
+        layout (location = 1) in vec3 in_normal;
+
+        layout (location = 2) in vec3 in_position;
+        layout (location = 3) in vec4 in_rotation;
+        layout (location = 4) in vec3 in_scale;
+
+        out vec3 v_vertex;
+        out vec3 v_normal;
+        flat out int v_id;
+
+        vec3 qtransform(vec4 q, vec3 v) {
+            return v + 2.0 * cross(cross(v, q.xyz) - q.w * v, q.xyz);
+        }
+
+        void main() {
+            v_vertex = in_position + qtransform(in_rotation, in_vertex * in_scale);
+            v_normal = qtransform(in_rotation, in_normal);
+
+            float angle = (v_vertex.x * 0.01 - offset * 0.0) * 1.2;
+            vec4 rotation = vec4(0.0, 0.0, sin(angle * 0.5), cos(angle * 0.5));
+            v_vertex = vec3(0.0, v_vertex.yz);
+            v_vertex = qtransform(rotation, v_vertex) + vec3(sin(angle), 1.0 - cos(angle), 0.0) * 100.0;
+            v_normal = qtransform(rotation, v_normal);
+            v_id = gl_InstanceID + 256;
+
+            gl_Position = camera_matrix * vec4(v_vertex, 1.0);
+        }
+    ''',
+    fragment_shader='''
+        #version 300 es
+        precision highp float;
+        precision highp int;
+
+        in vec3 v_vertex;
+        in vec3 v_normal;
+        flat in int v_id;
+
+        layout (location = 0) out vec4 out_color;
+
+        vec3 hsv2rgb(vec3 c) {
+            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+        }
+
+        void main() {
+            vec3 camera_position = vec3(0.0, 0.0, 0.0);
+            vec3 light_position = vec3(20.0, 0.0, 1.0);
+            vec3 light_direction = light_position - v_vertex;
+
+            float ambient = 0.01;
+            float facing = 0.01;
+            float shininess = 16.0;
+            float light_power = 10.0;
+
+            float light_distance = length(light_direction);
+            light_distance = light_distance * light_distance;
+            light_direction = normalize(light_direction);
+
+            float lambertian = max(dot(light_direction, v_normal), 0.0);
+            float specular = 0.0;
+
+            vec3 view_direction = normalize(camera_position - v_vertex);
+
+            if (lambertian > 0.0) {
+                vec3 half_direction = normalize(light_direction + view_direction);
+                float spec_angle = max(dot(half_direction, v_normal), 0.0);
+                specular = pow(spec_angle, shininess);
+            }
+
+            float facing_view_dot = max(dot(view_direction, v_normal), 0.0);
+
+            vec3 v_color = hsv2rgb(vec3(float(v_id) / 64.0, 1.0, 1.0));
+            vec3 light_color = vec3(1.0, 1.0, 1.0);
+            vec3 color_linear = v_color * ambient + v_color * facing_view_dot * facing +
+                v_color * lambertian * light_color * light_power / light_distance +
+                specular * light_color * light_power / light_distance;
+
+            out_color = vec4(pow(color_linear, vec3(1.0 / 2.2)), 1.0);
+        }
+    ''',
+    layout=[
+        {
+            'name': 'Common',
+            'binding': 0,
+        },
+    ],
+    resources=[
+        {
+            'type': 'uniform_buffer',
+            'binding': 0,
+            'buffer': uniform_buffer,
+        },
+    ],
+    framebuffer=[image, depth],
+    vertex_buffers=[
+        *zengl.bind(cube_vertex_buffer, '3f 3f', 0, 1),
+        *zengl.bind(particle_instance_buffer, '3f 4f 3f /i', 2, 3, 4),
+    ],
+    vertex_count=cube_vertex_buffer.size // zengl.calcsize('3f 3f'),
+    topology='triangles',
 )
 
 postprocessing = ctx.pipeline(
@@ -343,9 +459,13 @@ def render(timestamp=0.0):
     pipeline.render()
     game.update()
     count, bones = game.bones()
-    instance_buffer.write(bones)
-    shapes.instance_count = count
-    shapes.render()
+    cube_instance_buffer.write(bones)
+    cube_pipeline.instance_count = count
+    cube_pipeline.render()
+    count, particles = game.particles()
+    particle_instance_buffer.write(particles)
+    particle_pipeline.instance_count = count
+    particle_pipeline.render()
     if mousepress:
         postprocessing.uniforms['position'][:] = struct.pack('2f', mx, my)
     postprocessing.uniforms['time'][:] = struct.pack('f', now - g.explosiont_start)

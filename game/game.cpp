@@ -167,15 +167,21 @@ static PyObject * meth_explode(PyObject * self, PyObject * args, PyObject * kwar
 }
 
 static PyObject * meth_bones(PyObject * self, PyObject * args, PyObject * kwargs) {
-    PyObject * res = PyBytes_FromStringAndSize(NULL, (64 + num_particles) * sizeof(Bone));
+    PyObject * res = PyBytes_FromStringAndSize(NULL, 64 * sizeof(Bone));
     Bone * bones = (Bone *)PyBytes_AS_STRING(res);
     for (int i = 0; i < 64; ++i) {
         bones[i] = get_bone(boxes[i]);
     }
+    return Py_BuildValue("(iN)", 64, res);
+}
+
+static PyObject * meth_particles(PyObject * self, PyObject * args, PyObject * kwargs) {
+    PyObject * res = PyBytes_FromStringAndSize(NULL, num_particles * sizeof(Bone));
+    Bone * bones = (Bone *)PyBytes_AS_STRING(res);
     for (int i = 0; i < num_particles; ++i) {
-        bones[i + 64] = get_bone(particles[i]);
+        bones[i] = get_bone(particles[i]);
     }
-    return Py_BuildValue("(iN)", 64 + num_particles, res);
+    return Py_BuildValue("(iN)", num_particles, res);
 }
 
 static PyMethodDef module_methods[] = {
@@ -183,6 +189,7 @@ static PyMethodDef module_methods[] = {
     {"update", (PyCFunction)meth_update, METH_VARARGS | METH_KEYWORDS},
     {"explode", (PyCFunction)meth_explode, METH_VARARGS | METH_KEYWORDS},
     {"bones", (PyCFunction)meth_bones, METH_VARARGS | METH_KEYWORDS},
+    {"particles", (PyCFunction)meth_particles, METH_VARARGS | METH_KEYWORDS},
     {},
 };
 
