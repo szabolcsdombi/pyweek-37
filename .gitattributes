@@ -1,0 +1,5 @@
+.github/** linguist-detectable=false
+game/bullet/** linguist-documentation=false
+audio/*.h linguist-documentation=false
+**/Containerfile linguist-detectable=false
+**/*.html linguist-detectable=false
