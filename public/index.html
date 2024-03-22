@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+  <style>
+    html {
+      background-color: #222;
+    }
+    body {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100vw;
+      height: 100vh;
+    }
+    #canvas {
+      width: calc(min(min(100vw, 100vh), 800px));
+      height: calc(min(min(100vw, 100vh), 800px));
+      display: none;
+    }
+    #welcome {
+      color: white;
+      font-size: 48px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" width="800" height="800"></canvas>
+  <div id="welcome">
+    Click to Start
+  </div>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+  <script>
+    const downloadFile = async (FS, name, url) => {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      let data = new Uint8Array(await blob.arrayBuffer());
+      let stream = FS.open(name, 'w+');
+      FS.write(stream, data, 0, data.length, 0);
+      FS.close(stream);
+    };
+
+    window.mouseClick = true;
+    window.mousePosition = [0, 0];
+
+    const welcome = document.getElementById('welcome');
+    const canvas = document.getElementById('canvas');
+
+    canvas.addEventListener('mousemove', (evt) => {
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = Math.floor((evt.clientX - rect.left) / rect.width * 800);
+      const mouseY = Math.floor((evt.clientY - rect.top) / rect.height * 800);
+      window.mousePosition = [mouseX, mouseY];
+    });
+    canvas.addEventListener('click', (evt) => {
+      window.mouseClick = true;
+    });
+
+    const init = async () => {
+      const pyodide = await loadPyodide();
+      const wasm = pyodide._module;
+      const audio = {
+        ctx: new (window.AudioContext || window.webkitAudioContext)(),
+        buffers: new Map(),
+        sources: [],
+        index: 0,
+      };
+
+      wasm.mergeLibSymbols({
+        audio_load_audio(ptr, size) {
+          const buffer = audio.ctx.createBuffer(1, size, 44100);
+          const channel = buffer.getChannelData(0);
+          for (let i = 0; i < buffer.length; i++) {
+            channel[i] = wasm.HEAP16[ptr / 2 + i] / 65536;
+          }
+          const index = audio.index++;
+          audio.buffers[index] = buffer;
+          return index;
+        },
+        audio_play_audio(buffer, loop) {
+          const source = audio.ctx.createBufferSource();
+          source.buffer = audio.buffers[buffer];
+          audio.sources.push(source);
+          source.onended = () => {
+            const index = audio.sources.indexOf(source);
+            if (index > -1) {
+              audio.sources.splice(index, 1);
+            }
+          }
+          source.connect(audio.ctx.destination);
+          source.loop = !!loop;
+          source.start();
+        },
+      });
+
+      await Promise.all([
+        downloadFile(pyodide.FS, 'tube.bin', 'models/tube.bin'),
+        downloadFile(pyodide.FS, 'cube.bin', 'models/cube.bin'),
+        downloadFile(pyodide.FS, 'breaking-bottle.qoa', 'audio/breaking-bottle.qoa'),
+        downloadFile(pyodide.FS, 'raving-energy.qoa', 'audio/raving-energy.qoa'),
+      ]);
+      await pyodide.loadPackage([
+        'zengl-2.4.1-cp311-abi3-emscripten_3_1_46_wasm32.whl',
+        'game-0.1.0-cp311-cp311-emscripten_3_1_46_wasm32.whl',
+        'audio-0.1.0-cp311-cp311-emscripten_3_1_46_wasm32.whl',
+      ]);
+      const main = await fetch('main.py');
+      pyodide.runPython(await main.text());
+      window.pyodide = pyodide;
+    };
+
+    let initialized = false;
+    const loadOnce = () => {
+      if (!initialized) {
+        init();
+      }
+      window.welcome.innerText = 'Loading...';
+      document.removeEventListener('click', loadOnce);
+      initialized = true;
+    };
+
+    document.addEventListener('click', loadOnce);
+
+    window.loadingComplete = () => {
+      canvas.style.display = 'block';
+      welcome.remove();
+    };
+  </script>
+</body>
+</html>
